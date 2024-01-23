@@ -1,15 +1,11 @@
-//! Reed-Solomon decoding.
+//! Reed-Solomon Forward Error Correction for spacecraft data conforming to [CCSDS](https://public.ccsds.org)
+//! TM SYNCHRONIZATION AND CHANNEL CODING ([131.0-B-5](https://public.ccsds.org/Pubs/131x0b5.pdf).
 //!
-//! This library is indended to correct errors from spacecraft downlinked data streams
-//! that conform to [CCSDS](https://public.ccsds.org) specifications and not well suited 
-//! for general Reed-Solomon use-cases. See the CCSDS document
-//! [`TM Synchronization and Channel Coding`](https://public.ccsds.org/Pubs/131x0b5.pdf).
-//!
-//! This is mostly based on the wikiversity article found here:
-//! <https://en.wikiversity.org/wiki/Reed%E2%80%93Solomon_codes_for_coders>
-//! under the [Creative Commons](https://creativecommons.org) 
-//! [ShareAlike 4.0 International](https://creativecommons.org/licenses/by-sa/4.0/)
-//! license.
+//! This is only intended to perform RS as documented in the CCSDS document linked above. It is not
+//! a general purpose Reed-Solomon FEC implementation.
+//! 
+//! This has been ported and adopted from the Python code found in the excelent article 
+//! [Reed-Solomon Codes for Coders](https://en.wikiversity.org/wiki/Reed%E2%80%93Solomon_codes_for_coders).
 pub mod dual_basis;
 pub mod gf;
 
@@ -180,9 +176,15 @@ pub struct Block {
     pub message: Option<Vec<u8>>,
 }
 
-/// Correct a Reed-Solomon code block. The returned Block's message will
-/// contain the corrected message iff the state is RSState::Corrected. Otherwise
-/// it will be None.
+/// Correct a Reed-Solomon 255 byte code block, where the last [PARITY_LEN] bytes are 
+/// the parity/check bytes. The code block is also assumed to be in dual basis 
+/// representation.
+///
+/// The returned [Block::message} will contain the corrected message iff the state is 
+/// [RSState::Corrected]. Otherwise it will be None.
+///
+/// The state will be [RSState::Uncorrectable] if there are more errors than can be 
+/// corrected or if an algorithm failure occurs.
 pub fn correct_message(input: &[u8]) -> Block {
     let input = input.to_vec();
     if input.len() != N as usize {
