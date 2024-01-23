@@ -1,0 +1,11 @@
+[package]
+name = "rs2"
+version = "0.1.0"
+edition = "2021"
+description = "Reed-Solomon FEC for CCSDS downlink decoding"
+repository = "https://github.com/bmflynn/rs2"
+license = "GPLv3"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
