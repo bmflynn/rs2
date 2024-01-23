@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "Reed-Solomon FEC for CCSDS downlink decoding"
 repository = "https://github.com/bmflynn/rs2"
-license-file = "LICENCE"
+license-file = "LICENSE"
 keywords = ["ccsds", "reed-solomon", "fec"]
 categories = ["aerospace::space-protocols", "algorithms"]
 
