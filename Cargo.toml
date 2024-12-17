@@ -1,6 +1,6 @@
 [package]
 name = "rs2"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Reed-Solomon FEC for CCSDS downlink decoding"
 repository = "https://github.com/bmflynn/rs2"
