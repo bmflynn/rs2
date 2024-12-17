@@ -3,8 +3,8 @@
 //!
 //! This is only intended to perform RS as documented in the CCSDS document linked above. It is not
 //! a general purpose Reed-Solomon FEC implementation.
-//! 
-//! This has been ported and adopted from the Python code found in the excelent article 
+//!
+//! This has been ported and adopted from the Python code found in the excelent article
 //! [Reed-Solomon Codes for Coders](https://en.wikiversity.org/wiki/Reed%E2%80%93Solomon_codes_for_coders).
 pub mod dual_basis;
 pub mod gf;
@@ -31,7 +31,7 @@ pub enum RSState {
     Ok,
     /// RS was performed and the provided number of errors were successfully correct.
     Corrected(i32),
-    /// RS was performed but the RS codeblock was not correctable, e.g., there were 
+    /// RS was performed but the RS codeblock was not correctable, e.g., there were
     /// more errors than could be corrected.
     Uncorrectable(String),
     NotPerformed,
@@ -176,14 +176,14 @@ pub struct Block {
     pub message: Option<Vec<u8>>,
 }
 
-/// Correct a Reed-Solomon 255 byte code block, where the last [PARITY_LEN] bytes are 
-/// the parity/check bytes. The code block is also assumed to be in dual basis 
+/// Correct a Reed-Solomon 255 byte code block, where the last [PARITY_LEN] bytes are
+/// the parity/check bytes. The code block is also assumed to be in dual basis
 /// representation.
 ///
-/// The returned [Block::message} will contain the corrected message iff the state is 
+/// The returned [Block::message} will contain the corrected message iff the state is
 /// [RSState::Corrected]. Otherwise it will be None.
 ///
-/// The state will be [RSState::Uncorrectable] if there are more errors than can be 
+/// The state will be [RSState::Uncorrectable] if there are more errors than can be
 /// corrected or if an algorithm failure occurs.
 pub fn correct_message(input: &[u8]) -> Block {
     let input = input.to_vec();
@@ -273,7 +273,6 @@ pub fn has_errors(msg: &[u8]) -> bool {
     }
     x != 0
 }
-
 
 #[cfg(test)]
 mod tests {
