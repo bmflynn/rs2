@@ -38,6 +38,12 @@ const CONV_TO_DUAL: &[u8] = &[
     0x08, 0x73, 0xa7, 0xdc, 0x91, 0xea, 0x3e, 0x45, 0xf2, 0x89, 0x5d, 0x26, 0x6b, 0x10, 0xc4, 0xbf,
 ];
 
+/// Convert one byte to conventional format.
+#[inline]
+pub(crate) fn conv_byte(x: u8) -> u8 {
+    DUAL_TO_CONV[x as usize]
+}
+
 /// Convert data to conventional format.
 pub fn to_conv(msg: &[u8]) -> Vec<u8> {
     let mut out = vec![0u8; msg.len()];
@@ -54,4 +60,10 @@ pub fn to_dual(msg: &[u8]) -> Vec<u8> {
         out[i as usize] = CONV_TO_DUAL[*x as usize];
     }
     out
+}
+
+/// Convert one byte to dual basis format.
+#[inline]
+pub(crate) fn dual_byte(x: u8) -> u8 {
+    CONV_TO_DUAL[x as usize]
 }

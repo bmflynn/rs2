@@ -1,4 +1,4 @@
-const LOG: &[i32] = &[
+const LOG: &[u8] = &[
     0x00, 0x00, 0x74, 0x09, 0xe8, 0x12, 0x7d, 0x38, 0x5d, 0x41, 0x86, 0x85, 0xf1, 0x51, 0xac, 0x1b,
     0xd1, 0x24, 0xb5, 0x7b, 0xfa, 0x70, 0xf9, 0x5a, 0x66, 0x88, 0xc5, 0x4a, 0x21, 0x8e, 0x8f, 0x8a,
     0x46, 0x93, 0x98, 0x89, 0x2a, 0x3e, 0xef, 0x97, 0x6f, 0xb6, 0xe4, 0x91, 0x6e, 0x53, 0xce, 0xe1,
@@ -17,7 +17,7 @@ const LOG: &[i32] = &[
     0xec, 0x1e, 0x28, 0xab, 0xd2, 0xcf, 0x34, 0x2c, 0xe7, 0x69, 0x0f, 0x76, 0x62, 0x26, 0x4b, 0x3f,
 ];
 
-const EXP: &[i32] = &[
+const EXP: &[u8] = &[
     0x01, 0xad, 0xbe, 0x3a, 0x3c, 0xdc, 0x56, 0xca, 0x42, 0x03, 0x70, 0x45, 0x4e, 0x44, 0xe3, 0xfa,
     0xd9, 0xc6, 0x05, 0x90, 0xcf, 0xd2, 0xcc, 0xa2, 0x89, 0xec, 0xcd, 0x0f, 0x37, 0xd6, 0xf1, 0xd3,
     0x61, 0x1c, 0xb3, 0xd0, 0x11, 0x59, 0xfd, 0x94, 0xf2, 0xa3, 0x24, 0x52, 0xf7, 0x33, 0xeb, 0x80,
@@ -83,14 +83,19 @@ fn gen_exp_table(n: i32, prim: i32, gen: u8) -> ([i32; 512], [i32; 256]) {
     (exp, log)
 }
 
+// EXP has 512 entries and repeats with period 255, so a sum of two logs (at most 508) and a
+// difference plus 255 (at most 509) can index it without a modulo.
+
+#[inline]
 pub(super) fn mult(x: u8, y: u8) -> u8 {
     if x == 0 || y == 0 {
         0
     } else {
-        EXP[(LOG[x as usize] + LOG[y as usize]) as usize] as u8
+        EXP[LOG[x as usize] as usize + LOG[y as usize] as usize]
     }
 }
 
+#[inline]
 pub(super) fn div(x: u8, y: u8) -> u8 {
     if y == 0 {
         panic!("zero division");
@@ -98,105 +103,19 @@ pub(super) fn div(x: u8, y: u8) -> u8 {
     if x == 0 {
         return 0;
     }
-    EXP[((LOG[x as usize] + 255 - LOG[y as usize]) % 255) as usize] as u8
+    EXP[LOG[x as usize] as usize + 255 - LOG[y as usize] as usize]
 }
 
+#[inline]
 pub(super) fn pow(x: u8, power: i32) -> u8 {
     let mut power = power;
     if power < 0 {
         power = (255 - (-power % 255)) % 255;
     }
-    EXP[((LOG[x as usize] * power) % 255) as usize] as u8
+    EXP[((LOG[x as usize] as i32 * power) % 255) as usize]
 }
 
+#[inline]
 pub(super) fn inv(x: u8) -> u8 {
-    EXP[(255 - LOG[x as usize]) as usize] as u8
-}
-
-pub(super) fn poly_scale(p: &[u8], x: u8) -> Vec<u8> {
-    let mut r = vec![0u8; p.len()];
-    for i in 0..p.len() {
-        r[i] = mult(p[i], x);
-    }
-    r
-}
-
-pub(super) fn poly_add(p: &[u8], q: &[u8]) -> Vec<u8> {
-    let l = if p.len() > q.len() { p.len() } else { q.len() };
-    let mut r = vec![0u8; l];
-    let rl = r.len();
-    let pl = p.len();
-    let ql = q.len();
-
-    for i in 0..p.len() {
-        r[i + rl - pl] = p[i];
-    }
-    for i in 0..q.len() {
-        r[i + rl - ql] ^= q[i];
-    }
-    r
-}
-
-pub(super) fn poly_mult(p: &[u8], q: &[u8]) -> Vec<u8> {
-    let mut r = vec![0u8; p.len() + q.len() - 1];
-    for j in 0..q.len() {
-        for i in 0..p.len() {
-            r[i + j] ^= mult(p[i], q[j]);
-        }
-    }
-    r
-}
-
-// FIXME: use ndarray or simd here
-pub(super) fn poly_eval(p: &[u8], x: u8) -> u8 {
-    let mut y = p[0];
-    for i in 1..p.len() {
-        y = mult(y, x) ^ p[i];
-    }
-    y
-}
-
-/*
-#[cfg(test)]
-mod test {
-    extern crate test;
-    use super::*;
-    use rand::Rng;
-    use test::Bencher;
-
-    #[bench]
-    fn bench_poly_eval(b: &mut Bencher) {
-        let mut rng = rand::thread_rng();
-        let mut buf = [0u8; 1020];
-        for i in 0..buf.len() {
-            let f: u8 = rng.gen();
-            buf[i] = f;
-        }
-
-        b.iter(|| {
-            let x = poly_eval(&buf, 12);
-
-            rng.gen::<u8>() // return a value to avoid optimization issue
-        });
-    }
-}
-*/
-
-pub(super) fn poly_div(dividend: &[u8], divisor: &[u8]) -> (Vec<u8>, Vec<u8>) {
-    let mut out = Vec::with_capacity(dividend.len());
-    out.extend_from_slice(dividend);
-
-    for i in 0..(dividend.len() - divisor.len() - 1) {
-        let coef = out[i];
-        if coef != 0 {
-            for j in 1..divisor.len() {
-                if divisor[j] != 0 {
-                    out[i + j] ^= mult(divisor[j], coef);
-                }
-            }
-        }
-    }
-    let mid = dividend.len() - divisor.len() + 1;
-    let (head, tail) = out.split_at(mid);
-    (Vec::from(head), Vec::from(tail))
+    EXP[255 - LOG[x as usize] as usize]
 }

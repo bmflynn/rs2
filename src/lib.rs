@@ -8,6 +8,8 @@
 //! [Reed-Solomon Codes for Coders](https://en.wikiversity.org/wiki/Reed%E2%80%93Solomon_codes_for_coders).
 pub mod dual_basis;
 pub mod gf;
+#[cfg(test)]
+mod reference;
 
 /// Symbols per code word
 pub const N: u8 = 255;
@@ -37,135 +39,273 @@ pub enum RSState {
     NotPerformed,
 }
 
-fn correct_errata(input: &[u8], synd: &[u8], errpos: &[i32]) -> Result<Vec<u8>, &'static str> {
-    let mut coef_pos = vec![0i32; errpos.len()];
-    for (i, p) in errpos.iter().enumerate() {
-        coef_pos[i] = input.len() as i32 - 1 - p;
+/// Largest number of symbol errors the code can correct.
+const MAX_ERRORS: usize = PARITY_LEN / 2;
+
+/// Capacity for the error locator polynomial in the Berlekamp-Massey loop. The length of
+/// the polynomial is at most PARITY_LEN + 1.
+const LOC_CAP: usize = PARITY_LEN + 2;
+
+/// Result of a successful decode: where the errors are and what to XOR into them.
+/// Positions are indexes into the block. Values are in conventional representation.
+struct Errata {
+    count: usize,
+    pos: [u8; MAX_ERRORS],
+    val: [u8; MAX_ERRORS],
+}
+
+impl Errata {
+    /// Fix the errors in a dual basis block.
+    fn apply(&self, block: &mut [u8]) {
+        for i in 0..self.count {
+            let p = self.pos[i] as usize;
+            block[p] = dual_basis::dual_byte(dual_basis::conv_byte(block[p]) ^ self.val[i]);
+        }
+    }
+}
+
+/// Berlekamp-Massey. Returns the error locator, highest degree first, and its length.
+/// `synd` are the syndromes, without the leading zero.
+fn find_error_locator(synd: &[u8; PARITY_LEN]) -> ([u8; LOC_CAP], usize) {
+    let mut errloc = [0u8; LOC_CAP];
+    let mut oldloc = [0u8; LOC_CAP];
+    errloc[0] = 1;
+    oldloc[0] = 1;
+    let mut el = 1;
+    let mut ol = 1;
+    for i in 0..PARITY_LEN {
+        let mut delta = synd[i];
+        for j in 1..el {
+            delta ^= gf::mult(errloc[el - j - 1], synd[i - j]);
+        }
+        oldloc[ol] = 0;
+        ol += 1;
+        if delta != 0 {
+            if ol > el {
+                let mut newloc = [0u8; LOC_CAP];
+                for k in 0..ol {
+                    newloc[k] = gf::mult(oldloc[k], delta);
+                }
+                let dinv = gf::inv(delta);
+                let mut newold = [0u8; LOC_CAP];
+                for k in 0..el {
+                    newold[k] = gf::mult(errloc[k], dinv);
+                }
+                let new_ol = el;
+                errloc = newloc;
+                el = ol;
+                oldloc = newold;
+                ol = new_ol;
+            }
+            // errloc += delta * oldloc, with the low degree ends lined up
+            let l = el.max(ol);
+            if l > el {
+                errloc.copy_within(0..el, l - el);
+                errloc[..l - el].fill(0);
+            }
+            for k in 0..ol {
+                errloc[l - ol + k] ^= gf::mult(oldloc[k], delta);
+            }
+            el = l;
+        }
     }
 
-    let errloc = find_errata_locator(&coef_pos[..]);
-    let mut rev_synd = synd.to_owned();
-    rev_synd.reverse();
-    let mut erreval = find_error_evaluator(&rev_synd, &errloc, errloc.len() as i32 - 1);
-    erreval.reverse();
+    // drop leading zeros
+    let start = errloc[..el].iter().position(|c| *c != 0).unwrap_or(el);
+    errloc.copy_within(start..el, 0);
+    (errloc, el - start)
+}
 
-    let mut x = vec![0u8; coef_pos.len()];
-    for (i, p) in coef_pos.iter().enumerate() {
-        x[i] = gf::pow(GEN as u8, -(N as i32 - p));
+/// Chien search. `errloc` is the locator, highest degree first. Finds positions where the
+/// reversed polynomial is zero. Stops as soon as `want` roots are found, because a
+/// polynomial cannot have more roots than its degree. Returns the positions and how many
+/// were found.
+fn find_errors(errloc: &[u8], want: usize) -> ([u8; MAX_ERRORS], usize) {
+    // The reversed polynomial evaluated at x is sum(errloc[e] * x^e). At x = alpha^i that is
+    // sum(errloc[e] * alpha^(i*e)).
+    // Keep each term and multiply it by alpha^e for the next i.
+    let len = errloc.len();
+    let mut term = [0u8; LOC_CAP];
+    let mut step = [0u8; LOC_CAP];
+    for e in 0..len {
+        term[e] = errloc[e];
+        step[e] = gf::pow(GEN, e as i32);
     }
-
-    let mut e = vec![0u8; input.len()];
-    for (i, xi) in x.iter().enumerate() {
-        let xi_inv = gf::inv(*xi);
-        let mut errloc_prime_tmp: Vec<u8> = Vec::new();
-        for j in 0..x.len() {
-            if j != i {
-                errloc_prime_tmp.push(1 ^ gf::mult(xi_inv, x[j]));
+    let mut pos = [0u8; MAX_ERRORS];
+    let mut count = 0;
+    for i in 0..N as usize {
+        let mut sum = 0u8;
+        for e in 0..len {
+            sum ^= term[e];
+            term[e] = gf::mult(term[e], step[e]);
+        }
+        if sum == 0 {
+            if count < MAX_ERRORS {
+                pos[count] = (N as usize - 1 - i) as u8;
+            }
+            count += 1;
+            if count == want {
+                break;
             }
         }
-        let mut errloc_prime = 1u8;
-        for c in errloc_prime_tmp.iter() {
-            errloc_prime = gf::mult(errloc_prime, *c);
+    }
+    (pos, count)
+}
+
+/// Forney algorithm. Returns the error values for the given positions, or an error text.
+fn find_error_values(
+    synd: &[u8; PARITY_LEN],
+    pos: &[u8],
+) -> Result<[u8; MAX_ERRORS], &'static str> {
+    let n = pos.len();
+    let mut coef = [0i32; MAX_ERRORS];
+    for i in 0..n {
+        coef[i] = N as i32 - 1 - pos[i] as i32;
+    }
+
+    // errata locator: product of (a_i * x + 1), highest degree first, length n+1
+    let mut loc = [0u8; MAX_ERRORS + 1];
+    loc[0] = 1;
+    for i in 0..n {
+        let a = gf::pow(GEN, coef[i]);
+        let mut next = [0u8; MAX_ERRORS + 1];
+        for k in 0..=i {
+            next[k] ^= gf::mult(loc[k], a);
+            next[k + 1] ^= loc[k];
         }
+        loc = next;
+    }
+    let l = n + 1;
 
-        let mut erreval_rev = erreval.to_owned();
-        erreval_rev.reverse();
-        let mut y = gf::poly_eval(&erreval_rev, xi_inv);
-        y = gf::mult(gf::pow(*xi, 1 - FCR), y);
+    // error evaluator: the last l coefficients of reversed_syndromes * loc.
+    // reversed_syndromes[a] = synd[31 - a] for a < 32, and 0 for a = 32.
+    let mut eval = [0u8; MAX_ERRORS + 1];
+    for u in 0..l {
+        let mut v = 0u8;
+        for b in (u + 1)..l {
+            v ^= gf::mult(synd[b - u - 1], loc[b]);
+        }
+        eval[u] = v;
+    }
 
-        if errloc_prime == 0 {
+    let mut x = [0u8; MAX_ERRORS];
+    for i in 0..n {
+        x[i] = gf::pow(GEN, -(N as i32 - coef[i]));
+    }
+
+    let mut vals = [0u8; MAX_ERRORS];
+    for i in 0..n {
+        let xi = x[i];
+        let xi_inv = gf::inv(xi);
+        let mut prime = 1u8;
+        for j in 0..n {
+            if j != i {
+                prime = gf::mult(prime, 1 ^ gf::mult(xi_inv, x[j]));
+            }
+        }
+        let mut y = eval[0];
+        for c in &eval[1..l] {
+            y = gf::mult(y, xi_inv) ^ *c;
+        }
+        y = gf::mult(gf::pow(xi, 1 - FCR), y);
+
+        if prime == 0 {
             return Err("failed to find error magnitude");
         }
-
-        e[errpos[i] as usize] = gf::div(y, errloc_prime);
+        vals[i] = gf::div(y, prime);
     }
-
-    let zult = &gf::poly_add(&input, &e);
-    Ok(zult.to_vec())
+    Ok(vals)
 }
 
-fn find_errata_locator(errpos: &[i32]) -> Vec<u8> {
-    let mut errloc = vec![1u8];
-    for p in errpos.iter() {
-        let x = &[gf::pow(GEN as u8, *p), 0];
-        let y = gf::poly_add(&[1u8], x);
-        errloc = gf::poly_mult(&errloc, &y);
-    }
-    errloc
-}
-
-fn find_error_evaluator(synd: &[u8], errloc: &[u8], n: i32) -> Vec<u8> {
-    let mut divisor: Vec<u8> = vec![0u8; n as usize + 2];
-    divisor[0] = 1;
-    let (_, rem) = gf::poly_div(&gf::poly_mult(&synd, &errloc), &divisor);
-    rem
-}
-
-fn find_errors(errloc: &[u8]) -> Vec<i32> {
-    let num_errs = errloc.len() - 1;
-    let mut errpos: Vec<i32> = Vec::with_capacity(num_errs);
-    let n = N as i32;
-    for i in 0..n {
-        if gf::poly_eval(errloc, gf::pow(GEN, i as i32)) == 0 {
-            errpos.push(N as i32 - 1 - i);
+/// True if XORing the error values into the block makes all syndromes zero.
+///
+/// Syndromes are linear in the block. Adding value v at a position with degree c changes
+/// syndrome k by v * (alpha^(FCR+k))^c. So the new syndromes come from the old ones and the
+/// errors alone, with no pass over the 255 bytes.
+fn errata_clears_syndromes(synd: &[u8; PARITY_LEN], pos: &[u8], val: &[u8]) -> bool {
+    let mut s = *synd;
+    for (p, v) in pos.iter().zip(val) {
+        let c = N as i32 - 1 - *p as i32;
+        let a = gf::pow(GEN, c);
+        let mut cur = gf::pow(GEN, FCR * c);
+        for sk in s.iter_mut() {
+            *sk ^= gf::mult(*v, cur);
+            cur = gf::mult(cur, a);
         }
     }
-    errpos
+    s.iter().all(|x| *x == 0)
 }
 
-fn find_error_locator(synd: &[u8], parity_len: usize) -> Vec<u8> {
-    let mut errloc = vec![1u8];
-    let mut oldloc = vec![1u8];
-    let mut synd_shift = 0;
-    if synd.len() > parity_len {
-        synd_shift = synd.len() - parity_len;
+/// Error path. `synd` are the syndromes of a block, and at least one of them is not zero.
+fn find_errata(synd: &[u8; PARITY_LEN]) -> Result<Errata, String> {
+    let (errloc, el) = find_error_locator(synd);
+
+    let num_errs = el - 1;
+    if num_errs * 2 > PARITY_LEN {
+        return Err(format!(
+            "too many errors to correct; expected no more than {:?}, found {:?}",
+            PARITY_LEN / 2,
+            num_errs
+        ));
     }
-    for i in 0..parity_len {
-        let k = i as usize + synd_shift;
-        let mut delta = synd[k];
-        for j in 1..errloc.len() {
-            delta ^= gf::mult(errloc[errloc.len() - j - 1], synd[k - j]);
-        }
-        oldloc.push(0);
-        if delta != 0 {
-            if oldloc.len() > errloc.len() {
-                let newloc = gf::poly_scale(&oldloc, delta);
-                oldloc = gf::poly_scale(&errloc, gf::inv(delta));
-                errloc = newloc;
+
+    let (pos, count) = find_errors(&errloc[..el], num_errs);
+    if count != num_errs {
+        return Err(format!(
+            "failed to generate error positions; expected {} postions, got {}",
+            num_errs, count
+        ));
+    }
+
+    let val = find_error_values(synd, &pos[..count]).map_err(|e| e.to_owned())?;
+
+    if !errata_clears_syndromes(synd, &pos[..count], &val[..count]) {
+        return Err("failed to correct all errors".to_owned());
+    }
+    Ok(Errata { count, pos, val })
+}
+
+/// Multiplication tables for the syndrome roots. `tables[k][y] = y * GEN^(FCR+k)`.
+/// Built once. 32 * 256 = 8 KB.
+fn root_tables() -> &'static [[u8; 256]; PARITY_LEN] {
+    static TABLES: std::sync::OnceLock<[[u8; 256]; PARITY_LEN]> = std::sync::OnceLock::new();
+    TABLES.get_or_init(|| {
+        let mut t = [[0u8; 256]; PARITY_LEN];
+        for (k, row) in t.iter_mut().enumerate() {
+            let root = gf::pow(GEN, k as i32 + FCR);
+            for (y, v) in row.iter_mut().enumerate() {
+                *v = gf::mult(y as u8, root);
             }
-            errloc = gf::poly_add(&errloc, &gf::poly_scale(&oldloc, delta));
         }
-    }
-
-    while errloc.len() > 0 && errloc[0] == 0 {
-        errloc = errloc[1..].to_vec();
-    }
-
-    errloc
+        t
+    })
 }
 
-fn forney_syndromes(synd: &[u8], pos: &[i32], nmess: i32) -> Vec<u8> {
-    let mut erase_pos_rev = vec![0i32; pos.len()];
-    for (i, p) in pos.iter().enumerate() {
-        erase_pos_rev[i] = nmess - 1 - p;
-    }
-    let mut fsynd: Vec<u8> = Vec::with_capacity(synd.len() - 1);
-    fsynd.extend_from_slice(&synd[1..]);
-    for i in 0..pos.len() {
-        let x = gf::pow(GEN as u8, erase_pos_rev[i]);
-        for j in 0..fsynd.len() - 1 {
-            fsynd[j] = gf::mult(fsynd[j], x) ^ fsynd[j + 1];
+/// Evaluate the input polynomial at all [PARITY_LEN] roots in one pass. The 32 Horner
+/// chains do not depend on each other, so the CPU can run them at the same time.
+fn syndromes_core(input: impl Iterator<Item = u8>) -> [u8; PARITY_LEN] {
+    let tables = root_tables();
+    let mut s = [0u8; PARITY_LEN];
+    for b in input {
+        for k in 0..PARITY_LEN {
+            s[k] = tables[k][s[k] as usize] ^ b;
         }
     }
-    fsynd
+    s
 }
 
+/// Syndromes of a dual basis block. Element 0 of the result is the first syndrome.
+fn syndromes_dual(input: &[u8]) -> [u8; PARITY_LEN] {
+    syndromes_core(input.iter().map(|b| dual_basis::conv_byte(*b)))
+}
+
+/// Syndromes of a conventional basis block, with a leading zero element.
+#[cfg(test)]
 fn calc_syndromes(input: &[u8], parity_len: usize) -> Vec<u8> {
+    assert!(parity_len <= PARITY_LEN);
     let mut synd: Vec<u8> = vec![0u8; parity_len + 1];
-    for i in 0..parity_len {
-        let p = gf::pow(GEN, i as i32 + FCR);
-        synd[i + 1] = gf::poly_eval(&input, p);
-    }
+    let s = syndromes_core(input.iter().copied());
+    synd[1..].copy_from_slice(&s[..parity_len]);
     synd
 }
 
@@ -186,92 +326,61 @@ pub struct Block {
 /// The state will be [RSState::Uncorrectable] if there are more errors than can be
 /// corrected or if an algorithm failure occurs.
 pub fn correct_message(input: &[u8]) -> Block {
-    let input = input.to_vec();
     if input.len() != N as usize {
         return Block {
             state: RSState::Uncorrectable("invalid input".to_owned()),
             message: None,
         };
     }
-    let out = dual_basis::to_conv(&input).clone();
 
-    let synd = calc_syndromes(&out, PARITY_LEN);
-    let max = synd.iter().max().unwrap();
+    // Fast path: syndromes straight from the dual basis input. No conversion copy.
+    let s = syndromes_dual(input);
     // if there are no non-zero elements there are no errors
-    if *max == 0 {
+    if s.iter().all(|x| *x == 0) {
         return Block {
             state: RSState::Ok,
-            message: Some(input),
+            message: Some(input.to_vec()),
         };
     }
-
-    let fsynd = forney_syndromes(&synd, &[], out.len() as i32);
-    let errloc = find_error_locator(&fsynd[..], PARITY_LEN);
-
-    let num_errs = errloc.len() - 1;
-    if num_errs * 2 > PARITY_LEN {
-        return Block {
-            state: RSState::Uncorrectable(format!(
-                "too many errors to correct; expected no more than {:?}, found {:?}",
-                PARITY_LEN / 2,
-                num_errs
-            ))
-            .to_owned(),
+    match find_errata(&s) {
+        Err(msg) => Block {
+            state: RSState::Uncorrectable(msg),
             message: None,
-        };
-    }
-
-    let mut errloc_rev = errloc.clone();
-    errloc_rev.reverse();
-    let errpos = find_errors(&errloc_rev[..]);
-    if errpos.len() != num_errs {
-        return Block {
-            state: RSState::Uncorrectable(
-                format!(
-                    "failed to generate error positions; expected {} postions, got {}",
-                    num_errs,
-                    errpos.len()
-                )
-                .to_owned(),
-            ),
-            message: None,
-        };
-    }
-
-    let out = match correct_errata(&out, &synd, &errpos) {
-        Err(err) => {
-            return Block {
-                state: RSState::Uncorrectable(err.to_owned()),
-                message: None,
+        },
+        Ok(errata) => {
+            let mut out = input.to_vec();
+            errata.apply(&mut out);
+            Block {
+                state: RSState::Corrected(errata.count as i32),
+                message: Some(out),
             }
         }
-        Ok(block) => block,
-    };
-
-    let synd = calc_syndromes(&out, PARITY_LEN);
-    if *synd.iter().max().unwrap() > 0 {
-        return Block {
-            state: RSState::Uncorrectable("failed to correct all errors".to_owned()),
-            message: None,
-        };
     }
+}
 
-    Block {
-        state: RSState::Corrected(errloc.len() as i32 - 1),
-        message: Some(dual_basis::to_dual(&out)),
+/// Correct a block in place. The buffer must be a 255 byte code block in dual basis
+/// representation, the same as for [correct_message].
+///
+/// This does not allocate unless the block is uncorrectable (the state then holds a
+/// message). On [RSState::Corrected] the buffer holds the corrected block (parity bytes
+/// included, same as [Block::message]). In every other state the buffer is not changed.
+pub fn correct_in_place(buf: &mut [u8; N as usize]) -> RSState {
+    let s = syndromes_dual(buf);
+    if s.iter().all(|x| *x == 0) {
+        return RSState::Ok;
+    }
+    match find_errata(&s) {
+        Err(msg) => RSState::Uncorrectable(msg),
+        Ok(errata) => {
+            errata.apply(buf);
+            RSState::Corrected(errata.count as i32)
+        }
     }
 }
 
 /// Return true if the input code block contains 1 or more errors.
 pub fn has_errors(msg: &[u8]) -> bool {
-    let msg = dual_basis::to_conv(msg);
-    let mut x = 0;
-    for i in calc_syndromes(&msg[..], PARITY_LEN) {
-        if i > x {
-            x = i;
-        }
-    }
-    x != 0
+    syndromes_dual(msg).iter().any(|x| *x != 0)
 }
 
 #[cfg(test)]
